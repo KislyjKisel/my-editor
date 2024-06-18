@@ -1,0 +1,151 @@
+(in-package #:my-editor)
+
+(defstruct (activity-factory-tree (:copier nil)
+                                  (:constructor make-activity-factory-tree (label)))
+  (label nil :type (or null string))
+  (children (make-array 0 :adjustable t :fill-pointer t) :type (vector activity-factory-tree))
+  (value nil :type (or null api:activity-factory)))
+
+(defun api:register-activity-factory (activity-factory)
+  (let ((path (api:activity-factory-path activity-factory))
+        (tree (app-activity-factories **app**)))
+    (when (= 0 (length path))
+          (format t "Can't register activity factory: empty path")
+          (return-from api:register-activity-factory (values)))
+    (dotimes (i (length path))
+      (let ((path-label (aref path i))
+            (children (activity-factory-tree-children tree))
+            ; (new-branch-value (when (= (1+ i) (length path))
+            ;                         activity-factory))
+            (found-branch nil))
+        (dotimes (j (length children))
+          (let* ((other-node (aref children j))
+                 (other-label (activity-factory-tree-label other-node)))
+            (cond
+             ((string< path-label other-label)
+               (let ((new-branch (make-activity-factory-tree path-label)))
+                 (setf (activity-factory-tree-children tree) (gui::vector-insert children new-branch j))
+                 (setf tree new-branch)
+                 (setf found-branch t)
+                 (return)))
+             ((string= path-label other-label)
+               (setf tree other-node)
+               (setf found-branch t)
+               (return)))))
+        (unless found-branch
+          (let ((new-branch (make-activity-factory-tree path-label)))
+            (vector-push-extend new-branch (activity-factory-tree-children tree))
+            (setf tree new-branch)))))
+    (when (activity-factory-tree-value tree)
+          (format t "Replacing existing activity factory, path ~a" path))
+    (setf (activity-factory-tree-value tree) activity-factory))
+  (values))
+
+(defun create-activity (app factory)
+  (let ((activity (api:create-activity factory)))
+    (multiple-value-bind (get-title set-title)
+        (sdet:make-state (sdet-context app) (slot-value activity 'api::initial-title))
+      (setf (slot-value activity 'api::get-title) get-title)
+      (setf (slot-value activity 'api::set-title) set-title))
+    (let ((gui-window (gui:create-window nil :manually-rendered t :z-index 1)))
+      (setf (gui:window-on-key-action gui-window)
+        (lambda (ui window action keymod event)
+          (declare (ignore window))
+          (api:on-key-action ui activity action keymod event)))
+      (setf (gui:window-on-key-down gui-window)
+        (lambda (ui window keyval keymod event)
+          (declare (ignore window))
+          (api:on-key-down ui activity keyval keymod event)))
+      (setf (gui:window-on-key-up gui-window)
+        (lambda (ui window keyval keymod event)
+          (declare (ignore window))
+          (api:on-key-up ui activity keyval keymod event)))
+      (setf (slot-value activity 'api::gui-window) gui-window))
+    (gui:compose (app-ui app)
+                 (slot-value activity 'api::gui-window)
+                 (api:compose-activity-ui (app-ui app) activity))
+    activity))
+
+(defun destroy-activity (app activity)
+  (api:destroy-activity activity)
+  (let ((gui-window (api:activity-gui-window activity)))
+    (when gui-window
+          (gui:set-window-layer (app-ui app) gui-window nil)
+          (gui:destroy-window gui-window)))
+  (values))
+
+(defstruct (observable-vector (:copier nil)
+                              (:constructor make-observable-vector (sdet-ctx
+                                                                    &aux
+                                                                    (values (make-array 0 :adjustable t :fill-pointer 0))
+                                                                    (subscribe-notify (multiple-value-list (sdet:make-notifier sdet-ctx)))
+                                                                    (subscribe (first subscribe-notify))
+                                                                    (notify (second subscribe-notify)))))
+  (values (gui::unreachable) :type vector)
+  (subscribe)
+  (notify))
+
+(defstruct (activity-tree-node (:copier nil)
+                               (:constructor make-activity-tree-node (sdet-ctx axis low high
+                                                                               &aux
+                                                                               (get-set-middle (multiple-value-list (sdet:make-state sdet-ctx 0.5)))
+                                                                               (get-middle (first get-set-middle))
+                                                                               (set-middle (second get-set-middle))
+                                                                               (get-set-low (multiple-value-list (sdet:make-state sdet-ctx low)))
+                                                                               (get-low (first get-set-low))
+                                                                               (set-low (second get-set-low))
+                                                                               (get-set-high (multiple-value-list (sdet:make-state sdet-ctx high)))
+                                                                               (get-high (first get-set-high))
+                                                                               (set-high (second get-set-high)))))
+  (axis :x :type (member :x :y))
+  (get-middle)
+  (set-middle)
+  (get-low)
+  (set-low)
+  (get-high)
+  (set-high))
+
+; (defun activity-tree-low-setter (node child)
+;   (setf (activity-tree-node-low node) child)
+;   (values))
+
+; (defun activity-tree-high-setter (node child)
+;   (setf (activity-tree-node-high node) child)
+;   (values))
+
+; (defun activity-tree-delete (parent node path item index setter)
+;   (loop #:for dir #:in path
+;         #:do
+;         (check-type node activity-tree-node)
+;         (setf parent node)
+;         (if (eq dir :low)
+;             (progn
+;              (setf setter #'activity-tree-low-setter)
+;              (setf node (activity-tree-node-low node)))
+;             (progn
+;              (setf setter #'activity-tree-high-setter)
+;              (setf node (activity-tree-node-high node)))))
+;   (check-type node vector)
+;   (funcall setter parent (gui::vector-delete item node :start index))
+;   (values))
+
+; (defun activity-tree-split (sdet-ctx axis keep-where parent node setter path)
+;   (loop #:for dir #:in path
+;         #:do
+;         (check-type node activity-tree-node)
+;         (setf parent node)
+;         (if (eq dir :low)
+;             (progn
+;              (setf setter #'activity-tree-low-setter)
+;              (setf node (activity-tree-node-low root)))
+;             (progn
+;              (setf setter #'activity-tree-high-setter)
+;              (setf node (activity-tree-node-high root)))))
+;   (let ((new-node (make-activity-tree-node sdet-ctx
+;                                            axis
+;                                            (if (eq :low keep-where)
+;                                                 node
+;                                                ())
+;                                            )))
+
+;     (funcall setter parent new-node)))
